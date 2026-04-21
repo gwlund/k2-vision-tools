@@ -5,7 +5,6 @@
 #
 # Usage:
 #   bash setup-macbook.sh                    # Interactive (prompts for all input)
-#   bash setup-macbook.sh --starter-kit PATH # Provide path to claude-starter-kit.tar.gz
 #
 # What this automates (~75% of the guide):
 #   - All Homebrew, npm, uv installs
@@ -85,16 +84,11 @@ check_installed() {
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
-STARTER_KIT_PATH=""
 REPO_URL="https://github.com/gwlund/k2-vision-tools.git"
 REPO_DIR="$HOME/Documents/Projects/k2-vision-tools"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --starter-kit)
-            STARTER_KIT_PATH="$2"
-            shift 2
-            ;;
         --repo-url)
             REPO_URL="$2"
             shift 2
@@ -103,9 +97,8 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: bash setup-macbook.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --starter-kit PATH  Path to claude-starter-kit.tar.gz"
-            echo "  --repo-url URL      Git repo URL (default: gwlund/000-Claude-Code-Templates)"
-            echo "  --help              Show this help"
+            echo "  --repo-url URL  Git repo URL (default: gwlund/k2-vision-tools)"
+            echo "  --help          Show this help"
             exit 0
             ;;
         *)
@@ -429,39 +422,22 @@ mkdir -p ~/.claude/skills
 mkdir -p ~/.claude/plans
 success "Directory structure created"
 
-# --- 5.2-5.4 Install starter kit ---
-if [[ -n "$STARTER_KIT_PATH" && -f "$STARTER_KIT_PATH" ]]; then
-    info "5.2-5.4 Installing from starter kit: $STARTER_KIT_PATH"
-    EXTRACT_DIR=$(mktemp -d)
-    tar -xzf "$STARTER_KIT_PATH" -C "$EXTRACT_DIR"
+# --- 5.2-5.4 Install Claude config from repo ---
+CLAUDE_CONFIG="$REPO_DIR/claude-config"
+if [[ -d "$CLAUDE_CONFIG" ]]; then
+    info "5.2 Installing CLAUDE.md and ZOTERO-CLI-REFERENCE.md"
+    cp "$CLAUDE_CONFIG/CLAUDE.md" ~/.claude/CLAUDE.md
+    success "Installed CLAUDE.md"
+    cp "$CLAUDE_CONFIG/ZOTERO-CLI-REFERENCE.md" ~/.claude/ZOTERO-CLI-REFERENCE.md
+    success "Installed ZOTERO-CLI-REFERENCE.md"
 
-    # Copy CLAUDE.md
-    if [[ -f "$EXTRACT_DIR/claude-starter-kit/CLAUDE.md" ]]; then
-        cp "$EXTRACT_DIR/claude-starter-kit/CLAUDE.md" ~/.claude/CLAUDE.md
-        success "Installed CLAUDE.md"
-    fi
-
-    # Copy ZOTERO-CLI-REFERENCE.md
-    if [[ -f "$EXTRACT_DIR/claude-starter-kit/ZOTERO-CLI-REFERENCE.md" ]]; then
-        cp "$EXTRACT_DIR/claude-starter-kit/ZOTERO-CLI-REFERENCE.md" ~/.claude/ZOTERO-CLI-REFERENCE.md
-        success "Installed ZOTERO-CLI-REFERENCE.md"
-    fi
-
-    # Copy skills
-    if [[ -d "$EXTRACT_DIR/claude-starter-kit/skills" ]]; then
-        cp -r "$EXTRACT_DIR/claude-starter-kit/skills/"* ~/.claude/skills/
-        SKILL_COUNT=$(ls -d ~/.claude/skills/*/SKILL.md 2>/dev/null | wc -l | tr -d ' ')
-        # Also count skill.md (lowercase) variants
-        SKILL_COUNT_LC=$(ls -d ~/.claude/skills/*/skill.md 2>/dev/null | wc -l | tr -d ' ')
-        TOTAL_SKILLS=$((SKILL_COUNT + SKILL_COUNT_LC))
-        success "Installed $TOTAL_SKILLS skills"
-    fi
-
-    rm -rf "$EXTRACT_DIR"
+    info "5.3 Installing skills"
+    cp -r "$CLAUDE_CONFIG/skills/"* ~/.claude/skills/
+    SKILL_COUNT=$(ls -d ~/.claude/skills/*/SKILL.md ~/.claude/skills/*/skill.md 2>/dev/null | wc -l | tr -d ' ')
+    success "Installed $SKILL_COUNT skills"
 else
-    warn "No starter kit provided. Skipping CLAUDE.md, ZOTERO-CLI-REFERENCE.md, and skills."
-    echo "  Run this script again with: --starter-kit /path/to/claude-starter-kit.tar.gz"
-    echo "  Or manually copy the files your manager provides to ~/.claude/"
+    warn "claude-config/ not found in repo. Skipping CLAUDE.md, skills."
+    warn "Re-run this script after cloning the repo to install them."
 fi
 
 # --- 5.5 Settings ---

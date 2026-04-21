@@ -13,7 +13,7 @@ git clone https://github.com/gwlund/k2-vision-tools.git ~/Documents/Projects/k2-
 
 # 3. Run the setup script
 cd ~/Documents/Projects/k2-vision-tools/scripts
-bash setup-macbook.sh --starter-kit ~/Downloads/claude-starter-kit.tar.gz
+bash setup-macbook.sh
 ```
 
 The script installs Python, Node.js, VS Code, Claude Code, Zotero, Obsidian, and custom CLI tools. It pauses when manual steps are needed (browser logins, plugin installs).
