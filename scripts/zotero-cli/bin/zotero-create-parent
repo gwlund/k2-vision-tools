@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Create parent item for standalone PDF attachments."""
+
+import sys
+from pathlib import Path
+
+import click
+from rich.console import Console
+from rich.table import Table
+from rich.prompt import Prompt, Confirm
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from parsers import parse_creators
+
+console = Console()
+
+
+@click.command()
+@click.argument('attachment_key', required=False)
+@click.option('--batch', is_flag=True, help='Process all standalone PDFs interactively')
+@click.option('--item-type', default='report', help='Item type for parent (default: report)')
+@click.option('--title', help='Title (batch mode: skip interactive)')
+@click.option('--author', help='Authors (semicolon-separated)')
+@click.option('--year', help='Publication year')
+@click.option('--institution', help='Institution')
+@click.option('--place', help='Publication place')
+def create_parent(attachment_key: str, batch: bool, item_type: str,
+                 title: str, author: str, year: str, institution: str,
+                 place: str):
+    """Create parent bibliographic item for standalone PDF attachment.
+
+    Converts standalone PDFs to proper bibliographic entries with parent-child
+    relationship. Equivalent to Zotero GUI's "Create Parent Item" feature.
+
+    Examples:
+        # Interactive mode for single PDF
+        zotero-create-parent ABC123
+
+        # Batch mode - process all standalone PDFs
+        zotero-create-parent --batch
+
+        # Non-interactive with metadata
+        zotero-create-parent ABC123 --title "Report 2024" --author "WHO"
+    """
+    try:
+        api = ZoteroAPI()
+
+        if batch:
+            _batch_create_parents(api)
+        elif attachment_key:
+            _create_single_parent(
+                api, attachment_key, item_type,
+                title, author, year, institution, place
+            )
+        else:
+            console.print("[red]✗[/red] Must specify attachment key or use --batch")
+            console.print("[dim]Examples:[/dim]")
+            console.print("  [dim]zotero-create-parent ABC123[/dim]")
+            console.print("  [dim]zotero-create-parent --batch[/dim]")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+
+def _create_single_parent(api: ZoteroAPI, attachment_key: str, item_type: str,
+                         title: str, author: str, year: str, institution: str,
+                         place: str):
+    """Create parent for single attachment."""
+
+    # Get attachment info
+    attachment = api.zot.item(attachment_key)
+    pdf_title = attachment['data'].get('title', 'Untitled')
+    pdf_filename = attachment['data'].get('filename', '')
+
+    console.print(f"\n[bold]Creating parent item for:[/bold]")
+    console.print(f"[dim]PDF: {pdf_title}[/dim]")
+    console.print(f"[dim]File: {pdf_filename}[/dim]\n")
+
+    # Collect metadata interactively if not provided
+    if not title:
+        title = Prompt.ask("Title", default=pdf_title)
+    if not author:
+        author = Prompt.ask("Author(s)", default="")
+    if not year:
+        year = Prompt.ask("Year", default="")
+    if not institution and item_type == 'report':
+        institution = Prompt.ask("Institution", default="")
+    if not place:
+        place = Prompt.ask("Place", default="")
+
+    # Build metadata
+    metadata = {
+        'itemType': item_type,
+        'title': title
+    }
+
+    if author:
+        metadata['creators'] = parse_creators(author)
+    if year:
+        metadata['date'] = year
+    if institution:
+        metadata['institution'] = institution
+    if place:
+        metadata['place'] = place
+
+    # Create parent
+    console.print("\n[dim]Creating parent item...[/dim]")
+    parent_key = api.create_parent_item(attachment_key, metadata)
+
+    console.print(f"[green]✓[/green] Parent item created: {parent_key}")
+    console.print(f"[dim]PDF {attachment_key} is now linked as child attachment[/dim]")
+
+
+def _batch_create_parents(api: ZoteroAPI):
+    """Interactively create parents for all standalone PDFs."""
+
+    console.print("[dim]Finding standalone PDF attachments...[/dim]\n")
+    standalone = api.get_standalone_attachments()
+
+    if not standalone:
+        console.print("[yellow]⚠[/yellow]  No standalone PDF attachments found")
+        return
+
+    console.print(f"[bold]Found {len(standalone)} standalone PDF(s)[/bold]\n")
+
+    # Show table
+    table = Table(show_header=True)
+    table.add_column("Key", style="cyan")
+    table.add_column("Title")
+    table.add_column("Filename")
+
+    for item in standalone:
+        data = item['data']
+        table.add_row(
+            item['key'],
+            data.get('title', 'Untitled'),
+            data.get('filename', '')
+        )
+
+    console.print(table)
+    console.print()
+
+    # Process each
+    for item in standalone:
+        key = item['key']
+        data = item['data']
+        title = data.get('title', 'Untitled')
+
+        console.print(f"\n[bold]{title}[/bold]")
+
+        if not Confirm.ask(f"Create parent for {key}?", default=False):
+            console.print("[dim]Skipped[/dim]")
+            continue
+
+        # Interactive metadata collection
+        _create_single_parent(api, key, 'report', None, None, None, None, None)
+
+
+if __name__ == '__main__':
+    create_parent()

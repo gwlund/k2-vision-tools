@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Search Zotero annotations."""
+
+import sys
+from pathlib import Path
+import click
+import json
+
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from annotation_search import (
+    search_annotations,
+    format_search_results
+)
+from rich.console import Console
+
+console = Console()
+
+
+@click.command()
+@click.argument('query')
+@click.option('--collection', help='Search within collection')
+@click.option('--tag', help='Filter by annotation tag')
+@click.option('--item-key', help='Search within specific item')
+@click.option('--context', type=int, default=0, help='Lines of context')
+@click.option('--format', type=click.Choice(['text', 'json']), default='text')
+def search_annotations_cmd(query, collection, tag, item_key, context, format):
+    """Search Zotero annotations.
+
+    Examples:
+        zotero-search-annotations "population data"
+        zotero-search-annotations "tourism" --collection "CEDS Reports"
+        zotero-search-annotations "strategies" --tag "reviewed" --context 2
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        console.print(f"[dim]Searching for: {query}...[/dim]\n")
+
+        results = search_annotations(api, query, collection, tag, item_key)
+
+        if not results:
+            console.print("[yellow]No matches found[/yellow]")
+            sys.exit(0)
+
+        if format == 'json':
+            # Convert to JSON-serializable format
+            json_results = []
+            for r in results:
+                json_results.append({
+                    'item_key': r['item_key'],
+                    'item_title': r['item_title'],
+                    'annotation_key': r['annotation_key'],
+                    'text': r['text'],
+                    'comment': r['comment'],
+                    'page': r['page'],
+                    'tags': [t['tag'] for t in r['tags']],
+                    'match_context': r['match_context']
+                })
+            print(json.dumps(json_results, indent=2))
+        else:
+            output = format_search_results(results, context)
+            console.print(output)
+            console.print(f"\n[dim]Found {len(results)} matches[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    search_annotations_cmd()

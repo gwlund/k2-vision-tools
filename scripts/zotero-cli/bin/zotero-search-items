@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Search Zotero library for items."""
+
+import sys
+import argparse
+from pathlib import Path
+
+# Add lib to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+
+console = Console()
+
+def format_authors(creators):
+    """Format author list from creators."""
+    if not creators:
+        return "Unknown"
+
+    authors = [
+        c.get('lastName', c.get('name', ''))
+        for c in creators
+        if c.get('creatorType') in ['author', 'creator']
+    ]
+
+    if len(authors) == 0:
+        return "Unknown"
+    elif len(authors) == 1:
+        return authors[0]
+    elif len(authors) == 2:
+        return f"{authors[0]} & {authors[1]}"
+    else:
+        return f"{authors[0]} et al."
+
+def display_items(items, show_full=False):
+    """Display items in formatted output."""
+
+    if show_full:
+        # Full format with panels
+        for i, item in enumerate(items, 1):
+            data = item['data']
+
+            title = data.get('title', 'Untitled')
+            item_type = data.get('itemType', 'unknown')
+            authors = format_authors(data.get('creators', []))
+            year = data.get('date', 'n.d.')[:4] if data.get('date') else 'n.d.'
+            key = data.get('key', '')
+
+            content = f"[bold]{title}[/bold]\n"
+            content += f"[cyan]{authors}[/cyan] ({year})\n"
+            content += f"Type: {item_type} | Key: [dim]{key}[/dim]\n"
+
+            if data.get('publicationTitle'):
+                content += f"Published in: {data['publicationTitle']}\n"
+
+            if data.get('url'):
+                content += f"URL: [link]{data['url']}[/link]\n"
+
+            if data.get('tags'):
+                tags = ', '.join(t['tag'] for t in data['tags'])
+                content += f"Tags: {tags}"
+
+            console.print(Panel(content, title=f"[{i}]", border_style="blue"))
+    else:
+        # Compact table format
+        table = Table(title="Search Results")
+        table.add_column("#", justify="right", style="dim", width=4)
+        table.add_column("Title", style="cyan")
+        table.add_column("Authors", style="yellow")
+        table.add_column("Year", justify="center", width=6)
+        table.add_column("Type", width=12)
+        table.add_column("Key", style="dim", width=10)
+
+        for i, item in enumerate(items, 1):
+            data = item['data']
+            table.add_row(
+                str(i),
+                data.get('title', 'Untitled')[:50],
+                format_authors(data.get('creators', []))[:20],
+                data.get('date', '')[:4] if data.get('date') else 'n.d.',
+                data.get('itemType', 'unknown'),
+                data.get('key', '')
+            )
+
+        console.print(table)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Search Zotero library for items'
+    )
+    parser.add_argument(
+        'query',
+        nargs='?',
+        default='',
+        help='Search query (omit to list all items)'
+    )
+    parser.add_argument(
+        '--collection',
+        help='Collection name or key to search within'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=20,
+        help='Maximum results to return (default: 20)'
+    )
+    parser.add_argument(
+        '--full',
+        action='store_true',
+        help='Show full item details'
+    )
+    parser.add_argument(
+        '--keys-only',
+        action='store_true',
+        help='Output only item keys (one per line)'
+    )
+    parser.add_argument(
+        '--recursive',
+        action='store_true',
+        help='Search recursively through subcollections'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        api = ZoteroAPI()
+
+        # Get collection key if collection name provided
+        collection_key = None
+        if args.collection:
+            # Check if it's already a key (8 uppercase alphanumeric)
+            if len(args.collection) == 8 and args.collection.isupper():
+                collection_key = args.collection
+            else:
+                collection_key = api.get_collection_key(args.collection)
+                if not collection_key:
+                    console.print(f"[red]Error:[/red] Collection '{args.collection}' not found")
+                    sys.exit(1)
+
+        # Search items
+        if args.query:
+            if collection_key and args.recursive:
+                items = api.search_items_recursive(args.query, collection_key, limit=args.limit)
+            else:
+                items = api.search_items(args.query, limit=args.limit, collection_key=collection_key)
+        elif collection_key:
+            if args.recursive:
+                # Get all items from collection and subcollections
+                collection_keys = api.get_all_subcollection_keys(collection_key)
+                items = []
+                seen_keys = set()
+                for coll_key in collection_keys:
+                    coll_items = api.get_collection_items(coll_key)
+                    for item in coll_items:
+                        item_key = item['data']['key']
+                        if item_key not in seen_keys:
+                            seen_keys.add(item_key)
+                            items.append(item)
+            else:
+                items = api.get_collection_items(collection_key)
+        else:
+            items = api.get_all_items(limit=args.limit)
+
+        if not items:
+            console.print("[yellow]No items found[/yellow]")
+            sys.exit(0)
+
+        if args.keys_only:
+            for item in items:
+                print(item['data']['key'])
+        else:
+            display_items(items, show_full=args.full)
+            console.print(f"\n[green]Found {len(items)} items[/green]")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,13 @@
+[project]
+name = "zotero-cli"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "click>=8.3.0",
+    "crossrefapi>=1.7.0",
+    "habanero>=2.3.0",
+    "pyzotero>=1.7.5",
+    "requests>=2.32.5",
+    "rich>=14.2.0",
+]

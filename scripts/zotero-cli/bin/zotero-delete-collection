@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Delete a Zotero collection."""
+
+import sys
+import click
+from pathlib import Path
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+
+@click.command()
+@click.argument('collection')
+@click.option('--force', is_flag=True, help='Skip confirmation prompt')
+def delete_collection(collection: str, force: bool):
+    """Delete a collection and all its subcollections.
+
+    COLLECTION can be collection name, key, or path.
+
+    WARNING: This will delete all subcollections recursively.
+    Items are NOT deleted, only removed from the collection.
+
+    Examples:
+        zotero-delete-collection "Old Project" --force
+        zotero-delete-collection "Research/Archived" --force
+        zotero-delete-collection ABC123
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Resolve collection key
+        if len(collection) == 8 and collection.isupper():
+            collection_key = collection
+        elif '/' in collection:
+            collection_key = api.get_collection_by_path(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection path '{collection}' not found")
+                sys.exit(1)
+        else:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                sys.exit(1)
+
+        # Get subcollection count for warning
+        subcollections = api.get_all_subcollection_keys(collection_key)
+        num_subcollections = len(subcollections) - 1  # Exclude the parent itself
+
+        # Confirm deletion
+        if not force:
+            console.print(f"[yellow]⚠[/yellow]  About to delete collection and {num_subcollections} subcollection(s)")
+            console.print("[yellow]⚠[/yellow]  Items will NOT be deleted, only removed from collection")
+            confirm = click.confirm("Are you sure?", default=False)
+            if not confirm:
+                console.print("[dim]Cancelled[/dim]")
+                sys.exit(0)
+
+        # Delete collection
+        success = api.delete_collection(collection_key)
+
+        if success:
+            console.print(f"[green]✓[/green] Deleted collection and {num_subcollections} subcollection(s)")
+            console.print("[dim]Items were preserved in library[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to delete collection")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    delete_collection()

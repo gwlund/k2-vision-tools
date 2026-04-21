@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Update metadata for existing Zotero items."""
+
+import sys
+from pathlib import Path
+
+import click
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from parsers import parse_creators
+from validation import validate_fields_for_item_type
+from rich.console import Console
+
+console = Console()
+
+@click.command()
+@click.argument('item_key')
+@click.option('--title', help='Update title')
+@click.option('--year', help='Update publication year')
+@click.option('--abstract', help='Update abstract')
+@click.option('--url', help='Update URL')
+@click.option('--doi', help='Update DOI')
+@click.option('--publication', help='Update publication/journal name')
+@click.option('--author', '--creator', 'authors', help='Authors/creators (semicolon-separated). Format: "Lastname, Firstname" or "Organization Name"')
+@click.option('--institution', help='Institution (for reports)')
+@click.option('--report-type', help='Report type')
+@click.option('--place', help='Place/location')
+@click.option('--publisher', help='Publisher')
+@click.option('--series', help='Series name')
+def update_item(item_key: str, title: str, year: str, abstract: str,
+                url: str, doi: str, publication: str, authors: str,
+                institution: str, report_type: str, place: str,
+                publisher: str, series: str):
+    """Update specific fields of an existing Zotero item.
+
+    Only updates fields that are specified. Other fields are preserved.
+
+    Examples:
+        zotero-update-item ABC123 --title "Updated Title"
+        zotero-update-item ABC123 --author "Smith, John; Doe, Jane"
+        zotero-update-item ABC123 --institution "WHO" --place "Geneva"
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Get current item to validate item type
+        current_item = api.zot.item(item_key)
+        item_type = current_item['data'].get('itemType', 'unknown')
+
+        # Build updates dict with only specified fields
+        updates = {}
+
+        if title:
+            updates['title'] = title
+        if year:
+            updates['date'] = year
+        if abstract:
+            updates['abstractNote'] = abstract
+        if url:
+            updates['url'] = url
+        if doi:
+            updates['DOI'] = doi
+        if publication:
+            updates['publicationTitle'] = publication
+        if authors:
+            updates['creators'] = parse_creators(authors)
+        if institution:
+            updates['institution'] = institution
+        if report_type:
+            updates['reportType'] = report_type
+        if place:
+            updates['place'] = place
+        if publisher:
+            updates['publisher'] = publisher
+        if series:
+            updates['series'] = series
+
+        if not updates:
+            console.print("[yellow]⚠[/yellow]  No fields specified to update")
+            console.print("[dim]Use --title, --year, --author, --institution, etc.[/dim]")
+            sys.exit(0)
+
+        # Validate item-type-specific fields
+        validation_errors = validate_fields_for_item_type(item_type, updates)
+        if validation_errors:
+            console.print("[yellow]⚠[/yellow]  Warning: Some fields may not apply to this item type:")
+            for error in validation_errors:
+                console.print(f"[dim]  - {error}[/dim]")
+            console.print("[dim]Continuing anyway...[/dim]\n")
+
+        console.print(f"[dim]Updating {len(updates)} field(s) for {item_type} {item_key}...[/dim]")
+
+        # Update item
+        success = api.update_item(item_key, updates)
+
+        if success:
+            console.print(f"[green]✓[/green] Item updated successfully")
+            for field, value in updates.items():
+                if field == 'creators':
+                    creator_names = [
+                        f"{c.get('firstName', '')} {c.get('lastName', '')}".strip() or c.get('name', '')
+                        for c in value
+                    ]
+                    console.print(f"[dim]{field}: {'; '.join(creator_names)}[/dim]")
+                else:
+                    # Truncate long values for display
+                    display_value = str(value)
+                    if len(display_value) > 60:
+                        display_value = display_value[:57] + '...'
+                    console.print(f"[dim]{field}: {display_value}[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to update item")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        console.print(f"[dim]Make sure item key '{item_key}' exists[/dim]")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    update_item()

@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Find duplicate items based on DOI."""
+
+import sys
+from pathlib import Path
+
+import click
+import json
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+
+console = Console()
+
+def get_item_collections(api: ZoteroAPI, item_key: str) -> list:
+    """Get collection names for an item."""
+    collections = []
+    for coll in api.get_all_collections():
+        coll_items = api.get_collection_items(coll['data']['key'])
+        if item_key in [item['data']['key'] for item in coll_items]:
+            collections.append(coll['data']['name'])
+    return collections
+
+def count_notes_attachments(item: dict) -> tuple:
+    """Count notes and attachments for an item."""
+    # This is simplified - actual implementation would need to check children
+    # For now, return 0, 0 as placeholder
+    return 0, 0
+
+@click.command()
+@click.option('--collection', help='Search within specific collection')
+@click.option('--format', type=click.Choice(['table', 'json']), default='table', help='Output format')
+def find_duplicates(collection: str, format: str):
+    """Find all DOI-based duplicates in library.
+
+    Examples:
+        zotero-find-duplicates
+        zotero-find-duplicates --collection "Research"
+        zotero-find-duplicates --format json
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        if format == 'table':
+            console.print("[dim]Scanning library for DOI-based duplicates...[/dim]\n")
+
+        # Find duplicates
+        duplicates = api.find_duplicates_by_doi()
+
+        if not duplicates:
+            if format == 'json':
+                print(json.dumps({'duplicate_groups': 0, 'total_items': 0, 'groups': []}))
+            else:
+                console.print("[green]✓[/green] No duplicates found!")
+            sys.exit(0)
+
+        # Output results
+        if format == 'json':
+            output = {
+                'duplicate_groups': len(duplicates),
+                'total_items': sum(len(items) for items in duplicates.values()),
+                'groups': []
+            }
+
+            for doi, items in duplicates.items():
+                group = {
+                    'doi': doi,
+                    'count': len(items),
+                    'items': []
+                }
+                for item in items:
+                    data = item['data']
+                    group['items'].append({
+                        'key': data['key'],
+                        'title': data.get('title', ''),
+                        'creators': data.get('creators', []),
+                        'date': data.get('date', ''),
+                        'tags': [t['tag'] for t in data.get('tags', [])]
+                    })
+                output['groups'].append(group)
+
+            print(json.dumps(output, indent=2))
+
+        else:
+            # Table format
+            total_items = sum(len(items) for items in duplicates.values())
+            console.print(f"[bold]Found {len(duplicates)} duplicate groups ({total_items} items total)[/bold]\n")
+
+            for idx, (doi, items) in enumerate(duplicates.items(), 1):
+                console.print(f"[bold cyan]{'━' * 80}[/bold cyan]")
+                console.print(f"[bold]Group {idx}: DOI {doi}[/bold]\n")
+
+                for item_idx, item in enumerate(items):
+                    data = item['data']
+
+                    label = chr(65 + item_idx)  # A, B, C, ...
+                    console.print(f"[bold yellow]Item {label} ({data['key']})[/bold yellow]")
+                    console.print(f"  Title: {data.get('title', '(no title)')}")
+
+                    # Authors
+                    if 'creators' in data and data['creators']:
+                        authors = ', '.join([
+                            f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+                            for c in data['creators'][:3]
+                        ])
+                        if len(data['creators']) > 3:
+                            authors += ' et al.'
+                        console.print(f"  Authors: {authors}")
+
+                    # Year
+                    if 'date' in data:
+                        console.print(f"  Year: {data['date']}")
+
+                    # Collections
+                    collections = get_item_collections(api, data['key'])
+                    if collections:
+                        console.print(f"  Collections: {', '.join(collections)}")
+                    else:
+                        console.print(f"  Collections: [dim](none)[/dim]")
+
+                    # Tags
+                    if 'tags' in data and data['tags']:
+                        tag_names = [t['tag'] for t in data['tags']]
+                        console.print(f"  Tags: {', '.join(tag_names)}")
+
+                    # Citation key
+                    citekey = api.get_citation_key(data['key'])
+                    if citekey:
+                        console.print(f"  Citation Key: {citekey}")
+                    else:
+                        console.print(f"  Citation Key: [dim](none)[/dim]")
+
+                    console.print("")
+
+            console.print(f"[bold cyan]{'━' * 80}[/bold cyan]\n")
+            console.print("[dim]Run 'zotero-merge-duplicates' to resolve these duplicates.[/dim]")
+
+        sys.exit(0)
+
+    except Exception as e:
+        if format == 'json':
+            print(json.dumps({'error': str(e)}))
+        else:
+            console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    find_duplicates()

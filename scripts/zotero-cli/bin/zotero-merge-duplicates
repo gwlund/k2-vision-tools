@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Interactively merge duplicate items."""
+
+import sys
+from pathlib import Path
+
+import click
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.prompt import Prompt
+from rich.panel import Panel
+
+console = Console()
+
+def show_item_comparison(api: ZoteroAPI, items: list):
+    """Show comparison of duplicate items."""
+
+    for idx, item in enumerate(items):
+        data = item['data']
+        label = chr(65 + idx)  # A, B, C...
+
+        # Calculate quality score
+        score = api.calculate_item_score(item)
+        is_recommended = idx == 0  # First item after sorting by score
+
+        rec_marker = " ⭐ (Recommended)" if is_recommended else ""
+
+        console.print(f"\n[bold yellow][{label}] Item {data['key']}{rec_marker}[/bold yellow]")
+        console.print(f"    Title: {data.get('title', '(no title)')}")
+
+        # Authors
+        if 'creators' in data and data['creators']:
+            authors = ', '.join([
+                f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+                for c in data['creators'][:2]
+            ])
+            if len(data['creators']) > 2:
+                authors += ' et al.'
+            console.print(f"    Authors: {authors}")
+
+        # Year
+        if 'date' in data:
+            console.print(f"    Year: {data['date']}")
+
+        # Collections
+        collections = []
+        for coll in api.get_all_collections():
+            coll_items = api.get_collection_items(coll['data']['key'])
+            if data['key'] in [i['data']['key'] for i in coll_items]:
+                collections.append(coll['data']['name'])
+
+        if collections:
+            console.print(f"    Collections: {', '.join(collections)}")
+
+        # Tags
+        if 'tags' in data and data['tags']:
+            tag_names = [t['tag'] for t in data['tags']]
+            console.print(f"    Tags: {', '.join(tag_names)}")
+
+        # Citation key
+        citekey = api.get_citation_key(data['key'])
+        console.print(f"    Citation Key: {citekey if citekey else '[dim](none)[/dim]'}")
+
+        # Quality score
+        console.print(f"    Quality Score: {score}")
+
+@click.command()
+@click.option('--dry-run', is_flag=True, help='Preview without making changes')
+@click.option('--auto', is_flag=True, help='Auto-merge using smart defaults (still prompts for citation key conflicts)')
+def merge_duplicates(dry_run: bool, auto: bool):
+    """Interactively merge duplicate items.
+
+    Examples:
+        zotero-merge-duplicates
+        zotero-merge-duplicates --dry-run
+        zotero-merge-duplicates --auto
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        console.print("[dim]Finding duplicates...[/dim]\n")
+
+        duplicates = api.find_duplicates_by_doi()
+
+        if not duplicates:
+            console.print("[green]✓[/green] No duplicates found!")
+            sys.exit(0)
+
+        console.print(f"[bold]Found {len(duplicates)} duplicate groups[/bold]\n")
+
+        if dry_run:
+            console.print("[yellow]DRY RUN MODE - No changes will be made[/yellow]\n")
+
+        # Process each duplicate group
+        for group_idx, (doi, items) in enumerate(duplicates.items(), 1):
+            console.print(f"[bold cyan]{'━' * 80}[/bold cyan]")
+            console.print(f"[bold]Duplicate Group {group_idx} of {len(duplicates)}[/bold]")
+            console.print(f"[bold]DOI: {doi}[/bold]")
+
+            # Sort items by quality score (best first)
+            scored_items = [(item, api.calculate_item_score(item)) for item in items]
+            scored_items.sort(key=lambda x: x[1], reverse=True)
+            items = [item for item, score in scored_items]
+
+            # Show comparison
+            show_item_comparison(api, items)
+
+            # Get user choice
+            console.print("\n[bold]Which item should be the PRIMARY (kept) item?[/bold]")
+
+            options = [f"[{chr(65 + i)}]" for i in range(len(items))]
+            options.append("[S] Skip this group")
+            options.append("[Q] Quit")
+
+            console.print(" | ".join(options))
+
+            if auto:
+                choice = 'A'  # Auto-select recommended
+                console.print(f"\n[dim]Auto-selected: A (highest quality score)[/dim]")
+            else:
+                choice = Prompt.ask("\nChoice", default="A").upper()
+
+            if choice == 'Q':
+                console.print("\n[yellow]Merge cancelled[/yellow]")
+                sys.exit(0)
+
+            if choice == 'S':
+                console.print("[yellow]Skipped[/yellow]")
+                continue
+
+            # Validate choice
+            choice_idx = ord(choice) - 65
+            if choice_idx < 0 or choice_idx >= len(items):
+                console.print("[red]Invalid choice, skipping group[/red]")
+                continue
+
+            # Get primary and secondaries
+            primary = items[choice_idx]
+            secondaries = [item for i, item in enumerate(items) if i != choice_idx]
+
+            # Handle citation key conflicts
+            primary_citekey = api.get_citation_key(primary['data']['key'])
+            secondary_citekeys = [api.get_citation_key(s['data']['key']) for s in secondaries]
+            secondary_citekeys = [ck for ck in secondary_citekeys if ck]
+
+            preserve_citekey = None
+
+            if secondary_citekeys:
+                console.print(f"\n[yellow]⚠ Citation key conflict detected![/yellow]\n")
+                console.print(f"Primary has: {primary_citekey if primary_citekey else '(none)'}")
+                console.print(f"Secondary has: {', '.join(secondary_citekeys)}")
+
+                console.print("\nWhich citation key should the merged item use?")
+                console.print(f"[1] {primary_citekey if primary_citekey else '(none)'} (from primary) ⭐ Recommended")
+                console.print(f"[2] Keep secondary key(s) in Extra field")
+                console.print(f"[S] Skip - don't merge this group")
+
+                citekey_choice = Prompt.ask("Choice", default="1")
+
+                if citekey_choice.upper() == 'S':
+                    console.print("[yellow]Skipped[/yellow]")
+                    continue
+                elif citekey_choice == '2':
+                    preserve_citekey = ', '.join(secondary_citekeys)
+
+            # Perform merge
+            console.print(f"\n[bold]{'DRY RUN: Would merge' if dry_run else 'Merging duplicates...'}[/bold]")
+            console.print(f"  Primary: {primary['data']['key']} (keeping)")
+
+            for secondary in secondaries:
+                console.print(f"  Secondary: {secondary['data']['key']} (will be deleted)")
+
+                if not dry_run:
+                    api.merge_items(
+                        primary['data']['key'],
+                        secondary['data']['key'],
+                        preserve_citekey
+                    )
+
+            if dry_run:
+                console.print("[yellow]DRY RUN: No changes made[/yellow]")
+            else:
+                console.print("[green]✓[/green] Merge complete!")
+
+        console.print(f"\n[bold cyan]{'━' * 80}[/bold cyan]")
+
+        if dry_run:
+            console.print("\n[yellow]DRY RUN complete - no changes were made[/yellow]")
+        else:
+            console.print("\n[green]✓[/green] All duplicate groups processed!")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+if __name__ == '__main__':
+    merge_duplicates()

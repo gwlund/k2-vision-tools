@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Create Zotero note from annotations."""
+
+import sys
+from pathlib import Path
+import click
+
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+
+@click.command()
+@click.argument('item_key')
+@click.option('--tag-filter', default='reviewed',
+              help='Only include annotations with this tag')
+@click.option('--title', help='Note title (default: auto-generated)')
+def create_note(item_key, tag_filter, title):
+    """Create Zotero note from annotations.
+
+    Examples:
+        zotero-create-note-from-annotations ABC123
+        zotero-create-note-from-annotations ABC123 --tag-filter "reviewed"
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Get item
+        item = api.get_item(item_key)
+        if not item:
+            console.print(f"[red]✗[/red] Item {item_key} not found")
+            sys.exit(1)
+
+        item_title = item['data'].get('title', 'Untitled')
+        console.print(f"[bold]Creating note from:[/bold] {item_title}\n")
+        console.print(f"[dim]Filter: {tag_filter}[/dim]")
+
+        # Create note
+        note_key = api.create_note_from_annotations(item_key, tag_filter)
+
+        console.print(f"\n[green]✓[/green] Created note: {note_key}")
+        console.print(f"[dim]Open in Zotero: zotero://select/items/{note_key}[/dim]")
+
+    except ValueError as e:
+        console.print(f"[yellow]⚠[/yellow] {str(e)}")
+        sys.exit(0)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    create_note()

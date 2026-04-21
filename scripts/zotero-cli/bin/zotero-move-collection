@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Move a Zotero collection to a different parent."""
+
+import sys
+import click
+from pathlib import Path
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+
+@click.command()
+@click.argument('collection')
+@click.option('--parent', default=None, help='New parent collection (omit for top level)')
+def move_collection(collection: str, parent: str):
+    """Move a collection to a different parent.
+
+    COLLECTION can be collection name, key, or path.
+    Use --parent to specify new parent, or omit to move to top level.
+
+    Examples:
+        zotero-move-collection "Chapter 1" --parent "Dissertation"
+        zotero-move-collection "Research/Old Papers" --parent "Archive"
+        zotero-move-collection "Temp Collection"  # Move to top level
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Resolve collection key
+        if len(collection) == 8 and collection.isupper():
+            collection_key = collection
+        elif '/' in collection:
+            collection_key = api.get_collection_by_path(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection path '{collection}' not found")
+                sys.exit(1)
+        else:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                sys.exit(1)
+
+        # Resolve parent key
+        parent_key = None
+        if parent:
+            if len(parent) == 8 and parent.isupper():
+                parent_key = parent
+            elif '/' in parent:
+                parent_key = api.get_collection_by_path(parent)
+                if not parent_key:
+                    console.print(f"[red]✗[/red] Parent path '{parent}' not found")
+                    sys.exit(1)
+            else:
+                parent_key = api.get_collection_key(parent)
+                if not parent_key:
+                    console.print(f"[red]✗[/red] Parent collection '{parent}' not found")
+                    sys.exit(1)
+
+        # Move collection
+        success = api.move_collection(collection_key, parent_key)
+
+        if success:
+            if parent:
+                console.print(f"[green]✓[/green] Moved collection to '{parent}'")
+            else:
+                console.print(f"[green]✓[/green] Moved collection to top level")
+            console.print(f"[dim]Key: {collection_key}[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to move collection")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    move_collection()

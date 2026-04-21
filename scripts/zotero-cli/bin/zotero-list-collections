@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""List all Zotero collections with tree structure."""
+
+import sys
+import argparse
+from pathlib import Path
+
+# Add lib to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.tree import Tree
+from rich.table import Table
+
+console = Console()
+
+def build_tree_display(collections_data):
+    """Build rich Tree from collections data."""
+    tree = Tree("[bold]Zotero Collections[/bold]")
+
+    # Map to store tree nodes
+    nodes = {}
+
+    # First pass: create top-level collections
+    for coll in collections_data['top_level']:
+        label = f"{coll['name']} [dim]({coll['key']})[/dim]"
+        if coll['num_items'] > 0:
+            label += f" [cyan]{coll['num_items']} items[/cyan]"
+        nodes[coll['key']] = tree.add(label)
+
+    # Second pass: add children recursively
+    def add_children(parent_key, parent_node):
+        if parent_key in collections_data['children']:
+            for child in collections_data['children'][parent_key]:
+                label = f"{child['name']} [dim]({child['key']})[/dim]"
+                if child['num_items'] > 0:
+                    label += f" [cyan]{child['num_items']} items[/cyan]"
+                child_node = parent_node.add(label)
+                nodes[child['key']] = child_node
+                # Recurse for grandchildren
+                add_children(child['key'], child_node)
+
+    for coll in collections_data['top_level']:
+        add_children(coll['key'], nodes[coll['key']])
+
+    return tree
+
+def list_as_table(collections_data):
+    """Display collections as flat table."""
+    table = Table(title="Zotero Collections")
+    table.add_column("Name", style="cyan")
+    table.add_column("Key", style="dim")
+    table.add_column("Items", justify="right", style="magenta")
+    table.add_column("Parent", style="yellow")
+
+    # Flatten structure
+    all_colls = collections_data['top_level'][:]
+    for children in collections_data['children'].values():
+        all_colls.extend(children)
+
+    # Sort by name
+    all_colls.sort(key=lambda x: x['name'].lower())
+
+    for coll in all_colls:
+        parent_str = coll['parent'] if coll['parent'] else "-"
+        table.add_row(
+            coll['name'],
+            coll['key'],
+            str(coll['num_items']),
+            parent_str
+        )
+
+    return table
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='List all Zotero collections'
+    )
+    parser.add_argument(
+        '--format',
+        choices=['tree', 'table'],
+        default='tree',
+        help='Output format (default: tree)'
+    )
+    parser.add_argument(
+        '--keys-only',
+        action='store_true',
+        help='Output only collection keys (one per line)'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        api = ZoteroAPI()
+        collections = api.get_collection_tree()
+
+        total = len(collections['top_level']) + sum(
+            len(children) for children in collections['children'].values()
+        )
+
+        if args.keys_only:
+            # Output keys only (for scripting)
+            all_colls = collections['top_level'][:]
+            for children in collections['children'].values():
+                all_colls.extend(children)
+            for coll in all_colls:
+                print(coll['key'])
+        elif args.format == 'tree':
+            tree = build_tree_display(collections)
+            console.print(tree)
+            console.print(f"\n[green]Total: {total} collections[/green]")
+        else:  # table
+            table = list_as_table(collections)
+            console.print(table)
+            console.print(f"\n[green]Total: {total} collections[/green]")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

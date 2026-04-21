@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Add tags to existing Zotero items."""
+
+import sys
+from pathlib import Path
+
+import click
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+@click.command()
+@click.argument('item_key')
+@click.argument('tags', nargs=-1, required=True)
+def add_tags(item_key: str, tags: tuple):
+    """Add tags to an existing Zotero item.
+
+    Examples:
+        zotero-add-tags ABC123XYZ important reviewed to-cite
+        zotero-add-tags ABC123XYZ "climate change" policy economics
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Convert tuple to list
+        tag_list = list(tags)
+
+        console.print(f"[dim]Adding {len(tag_list)} tags to item {item_key}...[/dim]")
+
+        # Add tags (preserves existing tags)
+        success = api.add_tags_to_item(item_key, tag_list)
+
+        if success:
+            console.print(f"[green]✓[/green] Tags added successfully")
+            console.print(f"[dim]Tags: {', '.join(tag_list)}[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to add tags")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        console.print(f"[dim]Make sure item key '{item_key}' exists[/dim]")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    add_tags()

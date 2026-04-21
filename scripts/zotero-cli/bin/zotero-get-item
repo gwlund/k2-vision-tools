@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Get detailed information about a specific Zotero item."""
+
+import sys
+import argparse
+import json
+from pathlib import Path
+
+# Add lib to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+console = Console()
+
+def format_item_display(item, api):
+    """Format item for rich display."""
+    data = item['data']
+
+    # Build main info section
+    lines = []
+
+    # Title
+    lines.append(f"[bold cyan]{data.get('title', 'Untitled')}[/bold cyan]\n")
+
+    # Authors
+    if data.get('creators'):
+        authors = []
+        for creator in data['creators']:
+            creator_type = creator.get('creatorType', 'author')
+            name = creator.get('name')
+            if not name:
+                first = creator.get('firstName', '')
+                last = creator.get('lastName', '')
+                name = f"{first} {last}".strip()
+            authors.append(f"{name} ({creator_type})")
+        lines.append(f"[yellow]Authors:[/yellow] {', '.join(authors)}\n")
+
+    # Basic metadata
+    metadata = []
+    if data.get('itemType'):
+        metadata.append(f"Type: {data['itemType']}")
+    if data.get('date'):
+        metadata.append(f"Date: {data['date']}")
+    if data.get('publicationTitle'):
+        metadata.append(f"Publication: {data['publicationTitle']}")
+
+    if metadata:
+        lines.append(' | '.join(metadata) + '\n')
+
+    # Better BibTeX Citation Key
+    item_key = data.get('key')
+    if item_key:
+        citation_key = api.get_citation_key(item_key)
+        if citation_key:
+            lines.append(f"[green]Citation Key:[/green] {citation_key}\n")
+
+    # DOI/URL
+    if data.get('DOI'):
+        lines.append(f"[green]DOI:[/green] {data['DOI']}\n")
+    if data.get('url'):
+        lines.append(f"[green]URL:[/green] {data['url']}\n")
+
+    # Abstract
+    if data.get('abstractNote'):
+        abstract = data['abstractNote']
+        if len(abstract) > 200:
+            abstract = abstract[:200] + "..."
+        lines.append(f"\n[bold]Abstract:[/bold]\n{abstract}\n")
+
+    # Tags
+    if data.get('tags'):
+        tags = [t['tag'] for t in data['tags']]
+        lines.append(f"\n[bold]Tags:[/bold] {', '.join(tags)}\n")
+
+    # Collections
+    if data.get('collections'):
+        lines.append(f"\n[bold]Collections:[/bold] {', '.join(data['collections'])}\n")
+
+    # Item key
+    lines.append(f"\n[dim]Item Key: {item_key}[/dim]")
+
+    return '\n'.join(lines)
+
+def format_field_table(item):
+    """Display all fields in a table."""
+    data = item['data']
+
+    table = Table(title="Item Fields", show_header=True)
+    table.add_column("Field", style="cyan", width=20)
+    table.add_column("Value", style="white")
+
+    # Sort fields alphabetically
+    for field in sorted(data.keys()):
+        value = data[field]
+
+        # Skip complex fields for table view
+        if field in ['creators', 'tags', 'collections', 'relations']:
+            value = f"[{len(value)} items]" if isinstance(value, list) else str(value)
+        elif isinstance(value, dict):
+            value = "[dict]"
+        elif isinstance(value, list):
+            value = ", ".join(str(v) for v in value[:3])
+            if len(value) > 3:
+                value += "..."
+        else:
+            value = str(value)
+
+        # Truncate long values
+        if len(value) > 100:
+            value = value[:100] + "..."
+
+        table.add_row(field, value)
+
+    return table
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Get detailed information about a Zotero item'
+    )
+    parser.add_argument(
+        'item_key',
+        help='Item key (8-character code)'
+    )
+    parser.add_argument(
+        '--format',
+        choices=['display', 'table', 'json'],
+        default='display',
+        help='Output format (default: display)'
+    )
+    parser.add_argument(
+        '--raw',
+        action='store_true',
+        help='Show raw JSON response'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        api = ZoteroAPI()
+        item = api.get_item(args.item_key)
+
+        if args.raw or args.format == 'json':
+            # Output raw JSON
+            print(json.dumps(item, indent=2))
+        elif args.format == 'table':
+            # Table format
+            table = format_field_table(item)
+            console.print(table)
+        else:
+            # Rich display format - pass api to access citation keys
+            content = format_item_display(item, api)
+            console.print(Panel(content, title="Zotero Item", border_style="blue"))
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        console.print(f"[dim]Item key: {args.item_key}[/dim]")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

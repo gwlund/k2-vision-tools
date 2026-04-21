@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Import item from DOI with automatic metadata fetch."""
+
+import sys
+from pathlib import Path
+
+import click
+from habanero import Crossref
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from parsers import parse_tags
+from rich.console import Console
+
+console = Console()
+cr = Crossref()
+
+def fetch_metadata_from_doi(doi: str) -> dict:
+    """Fetch metadata from CrossRef API."""
+
+    try:
+        result = cr.works(ids=doi)
+
+        if not result or 'message' not in result:
+            raise ValueError(f"No metadata found for DOI: {doi}")
+
+        work = result['message']
+
+        # Parse authors
+        authors = []
+        if 'author' in work:
+            for author in work['author']:
+                authors.append({
+                    'creatorType': 'author',
+                    'firstName': author.get('given', ''),
+                    'lastName': author.get('family', '')
+                })
+
+        # Extract metadata
+        metadata = {
+            'itemType': 'journalArticle',
+            'title': work.get('title', [''])[0],
+            'creators': authors,
+            'DOI': doi,
+            'url': f"https://doi.org/{doi}",
+            'tags': []
+        }
+
+        # Add optional fields
+        if 'published-print' in work:
+            date_parts = work['published-print'].get('date-parts', [[]])[0]
+            if date_parts:
+                metadata['date'] = str(date_parts[0])
+        elif 'published-online' in work:
+            date_parts = work['published-online'].get('date-parts', [[]])[0]
+            if date_parts:
+                metadata['date'] = str(date_parts[0])
+
+        if 'container-title' in work and work['container-title']:
+            metadata['publicationTitle'] = work['container-title'][0]
+
+        if 'volume' in work:
+            metadata['volume'] = work['volume']
+
+        if 'issue' in work:
+            metadata['issue'] = work['issue']
+
+        if 'page' in work:
+            metadata['pages'] = work['page']
+
+        if 'abstract' in work:
+            metadata['abstractNote'] = work['abstract']
+
+        return metadata
+
+    except Exception as e:
+        raise ValueError(f"Failed to fetch metadata for DOI {doi}: {str(e)}")
+
+
+def _show_existing_item_details(api: ZoteroAPI, existing_data: dict):
+    """Display details about an existing item."""
+    console.print(f"[bold]Title:[/bold] {existing_data.get('title', '(no title)')}")
+
+    # Authors
+    if 'creators' in existing_data and existing_data['creators']:
+        authors = ', '.join([
+            f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+            for c in existing_data['creators'][:3]
+        ])
+        if len(existing_data['creators']) > 3:
+            authors += ' et al.'
+        console.print(f"[bold]Authors:[/bold] {authors}")
+
+    # Year
+    if 'date' in existing_data:
+        console.print(f"[bold]Year:[/bold] {existing_data['date']}")
+
+    console.print(f"[bold]Item key:[/bold] {existing_data['key']}")
+
+    # Collections
+    existing_collections = []
+    for coll in api.get_all_collections():
+        coll_items = api.get_collection_items(coll['data']['key'])
+        if existing_data['key'] in [item['data']['key'] for item in coll_items]:
+            existing_collections.append(coll['data']['name'])
+
+    if existing_collections:
+        console.print(f"[bold]Collections:[/bold] {', '.join(existing_collections)}")
+
+    # Tags
+    if 'tags' in existing_data and existing_data['tags']:
+        tag_names = [t['tag'] for t in existing_data['tags']]
+        console.print(f"[bold]Tags:[/bold] {', '.join(tag_names)}")
+
+    # Citation key
+    citekey = api.get_citation_key(existing_data['key'])
+    if citekey:
+        console.print(f"[bold]Citation key:[/bold] {citekey}")
+
+
+def _handle_update_existing(api: ZoteroAPI, doi: str, existing_data: dict):
+    """Update existing item's metadata from CrossRef."""
+    console.print("[dim]Updating metadata from CrossRef...[/dim]")
+    fresh_metadata = fetch_metadata_from_doi(doi)
+    update_fields = {k: v for k, v in fresh_metadata.items()
+                    if k not in ['itemType', 'tags', 'collections']}
+    api.update_item(existing_data['key'], update_fields)
+    console.print(f"[green]✓[/green] Updated: {existing_data['key']}")
+
+
+def _handle_add_to_collection(api: ZoteroAPI, existing: dict, collection: str,
+                               tags: str, existing_data: dict):
+    """Add existing item to a new collection."""
+    if not collection:
+        console.print("[red]✗[/red] No collection specified. Use --collection option.")
+        sys.exit(1)
+
+    collection_key = api.get_collection_key(collection)
+    if not collection_key:
+        console.print(f"[red]✗[/red] Collection '{collection}' not found")
+        sys.exit(1)
+
+    api.zot.addto_collection(collection_key, existing)
+    console.print(f"[green]✓[/green] Added to collection: {collection}")
+
+    if tags:
+        tag_list = parse_tags(tags)
+        api.add_tags_to_item(existing_data['key'], tag_list)
+        console.print(f"[green]✓[/green] Added tags: {', '.join(tag_list)}")
+
+    console.print(f"[dim]Item key: {existing_data['key']}[/dim]")
+
+
+def _handle_duplicate_interactive(api: ZoteroAPI, existing: dict, doi: str,
+                                   collection: str, tags: str, existing_data: dict):
+    """Handle duplicate with interactive user prompt."""
+    console.print(f"\n[yellow]⚠[/yellow] Item with DOI {doi} already exists\n")
+
+    # Show item details
+    _show_existing_item_details(api, existing_data)
+    console.print("")
+
+    # Show options
+    console.print("[bold]What would you like to do?[/bold]")
+    console.print("[1] Skip import (use existing item)")
+    console.print("[2] Update metadata from CrossRef")
+    console.print("[3] Add to collection \"{}\"".format(collection) if collection else "[3] (no collection specified)")
+    console.print("[4] Cancel operation")
+
+    choice = console.input("\n[bold]Choice:[/bold] ")
+
+    if choice == '1':
+        console.print(f"[green]✓[/green] Using existing item: {existing_data['key']}")
+        sys.exit(0)
+
+    elif choice == '2':
+        _handle_update_existing(api, doi, existing_data)
+        sys.exit(0)
+
+    elif choice == '3':
+        _handle_add_to_collection(api, existing, collection, tags, existing_data)
+        sys.exit(0)
+
+    else:
+        console.print("[yellow]Operation cancelled[/yellow]")
+        sys.exit(1)
+
+@click.command()
+@click.argument('doi')
+@click.option('--collection', help='Collection name to add item to')
+@click.option('--tags', help='Comma-separated tags to add')
+@click.option('--skip-existing', is_flag=True, help='Skip if DOI already exists (return existing item key)')
+@click.option('--update-existing', is_flag=True, help='Update existing item metadata if DOI exists')
+@click.option('--add-to-collection', is_flag=True, help='Add to collection even if item exists')
+def import_doi(doi: str, collection: str, tags: str, skip_existing: bool, update_existing: bool, add_to_collection: bool):
+    """Import item from DOI with automatic metadata retrieval.
+
+    Examples:
+        zotero-import-doi 10.1234/example
+        zotero-import-doi 10.1234/example --collection "My Papers" --tags "to-read,important"
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Check for duplicates
+        existing = api.find_item_by_doi(doi)
+
+        if existing:
+            # Item already exists - handle based on mode
+            existing_data = existing['data']
+
+            # Non-interactive modes
+            if skip_existing:
+                console.print(f"[green]✓[/green] Item exists: {existing_data['key']}")
+                sys.exit(0)
+
+            if update_existing:
+                _handle_update_existing(api, doi, existing_data)
+                sys.exit(0)
+
+            if add_to_collection:
+                _handle_add_to_collection(api, existing, collection, tags, existing_data)
+                sys.exit(0)
+
+            # Interactive mode
+            _handle_duplicate_interactive(api, existing, doi, collection, tags, existing_data)
+
+        console.print(f"[dim]Fetching metadata for DOI: {doi}...[/dim]")
+
+        # Fetch metadata
+        item_data = fetch_metadata_from_doi(doi)
+
+        # Add tags if specified
+        if tags:
+            tag_list = parse_tags(tags)
+            item_data['tags'] = [{'tag': tag} for tag in tag_list]
+
+        console.print(f"[green]✓[/green] Retrieved: {item_data['title']}")
+
+        if item_data['creators']:
+            author_names = ', '.join([
+                f"{c['firstName']} {c['lastName']}".strip()
+                for c in item_data['creators'][:3]
+            ])
+            if len(item_data['creators']) > 3:
+                author_names += ' et al.'
+            console.print(f"[dim]Authors: {author_names}[/dim]")
+
+        if 'date' in item_data:
+            console.print(f"[dim]Year: {item_data['date']}[/dim]")
+
+        # Get collection key if specified
+        collection_key = None
+        if collection:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                console.print("[dim]Create it first with: zotero-create-collection[/dim]")
+                sys.exit(1)
+
+        # Add item
+        item_key = api.add_item(item_data, collection_key)
+
+        console.print(f"[green]✓[/green] Added to Zotero library")
+        console.print(f"[dim]Item key: {item_key}[/dim]")
+
+        if collection:
+            console.print(f"[dim]Collection: {collection}[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    import_doi()

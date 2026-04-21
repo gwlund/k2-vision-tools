@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""List all tags in Zotero library."""
+
+import sys
+import argparse
+from pathlib import Path
+
+# Add lib to path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
+
+def display_tags_table(tags, show_counts=True):
+    """Display tags in a formatted table."""
+    table = Table(title="Zotero Tags")
+    table.add_column("#", justify="right", style="dim", width=6)
+    table.add_column("Tag", style="cyan")
+
+    if show_counts:
+        table.add_column("Count", justify="right", style="magenta", width=8)
+
+    # Sort by count descending, then alphabetically
+    sorted_tags = sorted(
+        tags,
+        key=lambda t: (-t.get('meta', {}).get('numItems', 0), t['tag'].lower())
+    )
+
+    for i, tag_data in enumerate(sorted_tags, 1):
+        tag = tag_data['tag']
+        count = tag_data.get('meta', {}).get('numItems', 0)
+
+        if show_counts:
+            table.add_row(str(i), tag, str(count))
+        else:
+            table.add_row(str(i), tag)
+
+    return table
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='List all tags in Zotero library'
+    )
+    parser.add_argument(
+        '--collection',
+        help='Collection name or key to get tags from'
+    )
+    parser.add_argument(
+        '--item',
+        help='Item key to get tags from'
+    )
+    parser.add_argument(
+        '--no-counts',
+        action='store_true',
+        help='Hide usage counts'
+    )
+    parser.add_argument(
+        '--names-only',
+        action='store_true',
+        help='Output only tag names (one per line)'
+    )
+    parser.add_argument(
+        '--min-count',
+        type=int,
+        default=0,
+        help='Only show tags used at least N times'
+    )
+
+    args = parser.parse_args()
+
+    try:
+        api = ZoteroAPI()
+
+        # Determine which tags to fetch
+        if args.item:
+            # Get tags for specific item
+            tag_list = api.get_item_tags(args.item)
+            tags = [{'tag': t, 'meta': {}} for t in tag_list]
+        elif args.collection:
+            # Get tags from collection
+            if len(args.collection) == 8 and args.collection.isupper():
+                collection_key = args.collection
+            else:
+                collection_key = api.get_collection_key(args.collection)
+                if not collection_key:
+                    console.print(f"[red]Error:[/red] Collection '{args.collection}' not found")
+                    sys.exit(1)
+            tags = api.get_collection_tags(collection_key)
+        else:
+            # Get all library tags
+            tags = api.get_all_tags()
+
+        # Filter by min count
+        if args.min_count > 0:
+            tags = [
+                t for t in tags
+                if t.get('meta', {}).get('numItems', 0) >= args.min_count
+            ]
+
+        if not tags:
+            console.print("[yellow]No tags found[/yellow]")
+            sys.exit(0)
+
+        if args.names_only:
+            for tag in sorted(tags, key=lambda t: t['tag'].lower()):
+                print(tag['tag'])
+        else:
+            table = display_tags_table(tags, show_counts=not args.no_counts)
+            console.print(table)
+            console.print(f"\n[green]Total: {len(tags)} tags[/green]")
+
+    except ValueError as e:
+        console.print(f"[red]Error:[/red] {e}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Unexpected error:[/red] {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    main()

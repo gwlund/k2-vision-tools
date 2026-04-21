@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Find item by DOI."""
+
+import sys
+from pathlib import Path
+
+import click
+import json
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+from rich.table import Table
+
+console = Console()
+
+def format_item_display(item: dict) -> str:
+    """Format item for display output."""
+    data = item['data']
+
+    lines = []
+    lines.append(f"[bold]Title:[/bold] {data.get('title', '(no title)')}")
+
+    # Authors
+    if 'creators' in data and data['creators']:
+        authors = ', '.join([
+            f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+            for c in data['creators'][:3]
+        ])
+        if len(data['creators']) > 3:
+            authors += ' et al.'
+        lines.append(f"[bold]Authors:[/bold] {authors}")
+
+    # Year
+    if 'date' in data:
+        lines.append(f"[bold]Year:[/bold] {data['date']}")
+
+    # Item key
+    lines.append(f"[bold]Item Key:[/bold] {data['key']}")
+
+    # DOI
+    if 'DOI' in data:
+        lines.append(f"[bold]DOI:[/bold] {data['DOI']}")
+
+    # URL
+    if 'url' in data:
+        lines.append(f"[bold]URL:[/bold] {data['url']}")
+
+    return '\n'.join(lines)
+
+@click.command()
+@click.argument('doi')
+@click.option('--show-details', is_flag=True, help='Show full item details')
+@click.option('--format', type=click.Choice(['text', 'json']), default='text', help='Output format')
+def find_by_doi(doi: str, show_details: bool, format: str):
+    """Find item by DOI.
+
+    Searches DOI field, URL field, and Extra field.
+    Returns item key if found.
+
+    Examples:
+        zotero-find-by-doi 10.1234/example
+        zotero-find-by-doi 10.1234/example --show-details
+        zotero-find-by-doi 10.1234/example --format json
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        if format == 'text':
+            console.print(f"[dim]Searching for DOI: {doi}...[/dim]")
+
+        item = api.find_item_by_doi(doi)
+
+        if not item:
+            if format == 'json':
+                print(json.dumps({'found': False, 'doi': doi}))
+            else:
+                console.print(f"[red]✗[/red] Not found: {doi}")
+            sys.exit(1)
+
+        # Output results
+        if format == 'json':
+            output = {
+                'found': True,
+                'doi': doi,
+                'item_key': item['data']['key']
+            }
+            if show_details:
+                output['item'] = item['data']
+            print(json.dumps(output, indent=2))
+
+        else:
+            if show_details:
+                console.print(f"[green]✓[/green] Found item:\n")
+                console.print(format_item_display(item))
+            else:
+                console.print(f"[green]✓[/green] Found: {item['data']['key']}")
+
+        sys.exit(0)
+
+    except Exception as e:
+        if format == 'json':
+            print(json.dumps({'error': str(e)}))
+        else:
+            console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    find_by_doi()

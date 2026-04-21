@@ -1,0 +1,30 @@
+{
+  "database": {
+    "type": "webLibrary",
+    "userId": "YOUR_ZOTERO_USER_ID",
+    "apiKey": "YOUR_ZOTERO_API_KEY"
+  },
+  "import": {
+    "dataDirectory": "Literature/",
+    "templateFile": "Templates/Zotero-Literature-Note.md",
+    "attachmentDirectory": "Literature/attachments/",
+    "importAttachments": true,
+    "importNotes": true
+  },
+  "citation": {
+    "format": "pandoc",
+    "bracketStyle": "[@citekey]",
+    "omitAuthor": "[-@citekey]",
+    "inTextStyle": "@citekey"
+  },
+  "format": {
+    "dateFormat": "YYYY-MM-DD",
+    "authorFormat": "Last, First",
+    "titleFormat": "Title Case"
+  },
+  "advanced": {
+    "citekeyFormat": "{{authors}}{{year}}{{title}}",
+    "allowDuplicates": false,
+    "updateAttachments": true
+  }
+}

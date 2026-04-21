@@ -1,0 +1,19 @@
+name: Comprehensive Economic Development Strategy
+itemType: report
+reportType: CEDS
+required_fields:
+  - title
+  - creator
+  - date
+  - place
+optional_fields:
+  - publisher
+  - url
+  - abstractNote
+  - extra
+suggested_tags:
+  - ceds
+  - comparable-regions
+suggested_collections:
+  - Comparable City CEDS
+  - Government Reports & Plans

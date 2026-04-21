@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+"""Add PDF to Zotero with intelligent metadata extraction."""
+
+import sys
+from pathlib import Path
+import click
+import requests
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from pdf_metadata import (
+    extract_embedded_metadata,
+    extract_text_from_pages,
+    parse_title_page_metadata,
+    combine_metadata_sources
+)
+from metadata_prompts import (
+    prompt_metadata_interactive,
+    load_template,
+    show_template_info
+)
+from rich.console import Console
+
+console = Console()
+
+
+def _download_pdf_from_url(url: str, target_path: Path) -> bool:
+    """Download PDF from URL to local path.
+
+    Args:
+        url: URL to PDF
+        target_path: Local path to save to
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        console.print(f"[dim]Downloading from {url}...[/dim]")
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+
+        with open(target_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        console.print(f"[green]✓[/green] Downloaded to {target_path}")
+        return True
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Download failed: {str(e)}")
+        return False
+
+
+def _extract_all_metadata(pdf_path: Path) -> dict:
+    """Extract metadata from all sources (embedded + OCR + parsing).
+
+    Args:
+        pdf_path: Path to PDF file
+
+    Returns:
+        dict: Combined metadata from all sources
+    """
+    console.print("[dim]Extracting embedded metadata...[/dim]")
+    embedded = extract_embedded_metadata(pdf_path)
+
+    console.print("[dim]Analyzing title page with OCR...[/dim]")
+    text = extract_text_from_pages(pdf_path, pages=[0, 1])
+    parsed = parse_title_page_metadata(text)
+
+    return combine_metadata_sources(embedded, parsed)
+
+
+def _get_library_suggestions(api: ZoteroAPI, metadata: dict) -> dict:
+    """Get suggestions from library for each metadata field.
+
+    Args:
+        api: ZoteroAPI instance
+        metadata: Extracted metadata
+
+    Returns:
+        dict: Suggestions for each field
+    """
+    suggestions = {}
+
+    if 'creator' in metadata:
+        suggestions['creator'] = api.suggest_creators(metadata['creator'])
+
+    if 'publisher' in metadata:
+        suggestions['publisher'] = api.suggest_publishers(metadata['publisher'])
+
+    if 'place' in metadata:
+        suggestions['place'] = api.suggest_places(metadata['place'])
+
+    return suggestions
+
+
+def _show_metadata_summary(metadata: dict):
+    """Display extracted metadata summary.
+
+    Args:
+        metadata: Extracted metadata dictionary
+    """
+    console.print("\n[bold]Extracted Metadata:[/bold]")
+    for key, value in metadata.items():
+        if value:
+            console.print(f"  [cyan]{key}:[/cyan] {value}")
+
+
+def _handle_existing_item_update(api: ZoteroAPI, item_key: str, metadata: dict):
+    """Update metadata for existing Zotero item.
+
+    Args:
+        api: ZoteroAPI instance
+        item_key: Item key to update
+        metadata: New metadata
+    """
+    console.print(f"[dim]Updating item {item_key}...[/dim]")
+    api.update_item_metadata(item_key, metadata)
+    console.print(f"[green]✓[/green] Updated item: {item_key}")
+
+
+@click.command()
+@click.argument('pdf_path', required=False, type=click.Path(exists=True))
+@click.option('--url', help='Download PDF from URL')
+@click.option('--collection', help='Collection to add item to')
+@click.option('--tags', help='Comma-separated tags')
+@click.option('--template', help='Document template (ceds, housing-element, etc.)')
+@click.option('--item-key', help='Update existing Zotero item')
+@click.option('--update-metadata', is_flag=True, help='Update metadata for existing item')
+@click.option('--keep-local', is_flag=True, help="Don't delete local PDF after upload")
+@click.option('--analyze', is_flag=True, help='Run LLM analysis after upload')
+@click.option('--topics', help='Topics for analysis (requires --analyze)')
+def add_pdf(pdf_path, url, collection, tags, template, item_key,
+           update_metadata, keep_local, analyze, topics):
+    """Add PDF to Zotero with intelligent metadata extraction.
+
+    Examples:
+        zotero-add-pdf document.pdf
+        zotero-add-pdf document.pdf --collection "CEDS Reports" --tags "tourism"
+        zotero-add-pdf document.pdf --template ceds
+        zotero-add-pdf --url https://example.com/report.pdf
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Handle URL download
+        if url:
+            filename = url.split('/')[-1]
+            if not filename.endswith('.pdf'):
+                filename = 'downloaded.pdf'
+            pdf_path = Path(f"/tmp/{filename}")
+            if not _download_pdf_from_url(url, pdf_path):
+                sys.exit(1)
+        elif not pdf_path:
+            console.print("[red]✗[/red] Must provide PDF path or --url")
+            sys.exit(1)
+
+        pdf_path = Path(pdf_path)
+
+        # Update existing item
+        if item_key and update_metadata:
+            metadata = _extract_all_metadata(pdf_path)
+            _handle_existing_item_update(api, item_key, metadata)
+            sys.exit(0)
+
+        # Extract metadata
+        console.print(f"[bold]Processing:[/bold] {pdf_path.name}\n")
+        extracted = _extract_all_metadata(pdf_path)
+        _show_metadata_summary(extracted)
+
+        # Get suggestions from library
+        suggestions = _get_library_suggestions(api, extracted)
+
+        # Load template if specified
+        template_data = load_template(template) if template else None
+        if template_data:
+            show_template_info(template_data)
+
+        # Interactive metadata entry
+        console.print("\n[bold]Complete metadata:[/bold]\n")
+        complete_metadata = prompt_metadata_interactive(
+            extracted,
+            suggestions,
+            template_data
+        )
+
+        # Add tags
+        if tags:
+            tag_list = [t.strip() for t in tags.split(',')]
+            complete_metadata['tags'] = [{'tag': t} for t in tag_list]
+        elif template_data and 'suggested_tags' in template_data:
+            # Use template suggested tags
+            tag_list = template_data['suggested_tags']
+            complete_metadata['tags'] = [{'tag': t} for t in tag_list]
+
+        # Upload to Zotero
+        console.print("\n[dim]Uploading to Zotero...[/dim]")
+
+        # Get collection key if specified
+        collection_key = None
+        if collection:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                console.print("[dim]Create it first with: zotero-create-collection[/dim]")
+                sys.exit(1)
+        elif template_data and 'suggested_collections' in template_data:
+            # Try to use first suggested collection
+            suggested_coll = template_data['suggested_collections'][0]
+            collection_key = api.get_collection_key(suggested_coll)
+
+        # Add item with PDF attachment
+        item_key = api.add_item_with_attachment(
+            complete_metadata,
+            pdf_path,
+            collection_key
+        )
+
+        console.print(f"[green]✓[/green] Added to Zotero")
+        console.print(f"[dim]Item key: {item_key}[/dim]")
+
+        if collection:
+            console.print(f"[dim]Collection: {collection}[/dim]")
+
+        # Run LLM analysis if requested (Phase B integration)
+        if analyze:
+            console.print("\n[dim]Running LLM analysis...[/dim]")
+
+            # Import Phase B modules
+            from llm_analysis import get_llm_provider, build_analysis_prompt, extract_highlights_from_response
+            from pdf_text_extraction import prepare_document_for_llm
+
+            try:
+                # Use tags as topics if --topics not provided
+                analysis_topics = topics if topics else ','.join([t['tag'] for t in complete_metadata.get('tags', [])])
+
+                # Prepare document
+                document = prepare_document_for_llm(pdf_path)
+
+                # Build prompt
+                topic_list = analysis_topics.split(',') if analysis_topics else []
+                prompt = build_analysis_prompt(topic_list, mode='quick')
+
+                # Get LLM provider
+                provider = get_llm_provider('claude')
+
+                # Analyze
+                response = provider.analyze_document(document['text'], prompt)
+                highlights = extract_highlights_from_response(response)
+
+                # Create highlights
+                for h in highlights:
+                    api.create_highlight(item_key, {
+                        'text': h['text'],
+                        'page': h['page'],
+                        'comment': h['reason'],
+                        'tags': ['needs-review']
+                    })
+
+                console.print(f"[green]✓[/green] Created {len(highlights)} highlights")
+
+            except Exception as e:
+                console.print(f"[yellow]⚠[/yellow] Analysis failed: {str(e)}")
+                console.print("[dim]PDF uploaded successfully, but analysis encountered an error[/dim]")
+
+        # Delete local PDF unless --keep-local
+        if not keep_local and not url:  # Don't delete original user files
+            pass  # Keep user's original file
+        elif url and not keep_local:
+            pdf_path.unlink()
+            console.print(f"[dim]Removed temporary download[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    add_pdf()

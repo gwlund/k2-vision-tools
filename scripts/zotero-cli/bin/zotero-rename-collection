@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Rename a Zotero collection."""
+
+import sys
+import click
+from pathlib import Path
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+
+@click.command()
+@click.argument('collection')
+@click.argument('new_name')
+def rename_collection(collection: str, new_name: str):
+    """Rename a Zotero collection.
+
+    COLLECTION can be collection name, key, or path (e.g., Research/Papers).
+    NEW_NAME is the new name for the collection.
+
+    Examples:
+        zotero-rename-collection "Old Name" "New Name"
+        zotero-rename-collection ABC123 "New Name"
+        zotero-rename-collection "Research/Papers" "Articles"
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Resolve collection key
+        if len(collection) == 8 and collection.isupper():
+            collection_key = collection
+        elif '/' in collection:
+            collection_key = api.get_collection_by_path(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection path '{collection}' not found")
+                sys.exit(1)
+        else:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                sys.exit(1)
+
+        # Rename collection
+        success = api.rename_collection(collection_key, new_name)
+
+        if success:
+            console.print(f"[green]✓[/green] Renamed collection to '{new_name}'")
+            console.print(f"[dim]Key: {collection_key}[/dim]")
+        else:
+            console.print(f"[red]✗[/red] Failed to rename collection")
+            sys.exit(1)
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    rename_collection()

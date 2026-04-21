@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Add a new item to Zotero library."""
+
+import sys
+import json
+from pathlib import Path
+
+import click
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from parsers import parse_author_list, parse_tags
+from templates import (
+    journal_article_template,
+    book_template,
+    webpage_template,
+    report_template,
+    conference_paper_template
+)
+from rich.console import Console
+
+console = Console()
+
+@click.command()
+@click.option('--type', 'item_type', required=True,
+              type=click.Choice(['journalArticle', 'book', 'webpage', 'report', 'conferencePaper']),
+              help='Type of item to create')
+@click.option('--title', required=True, help='Item title')
+@click.option('--authors', help='Authors (semicolon-separated: "Last, First; Last2, First2")')
+@click.option('--year', help='Publication year')
+@click.option('--publication', help='Publication/Journal name (for articles)')
+@click.option('--publisher', help='Publisher name (for books)')
+@click.option('--volume', help='Volume number')
+@click.option('--issue', help='Issue number')
+@click.option('--pages', help='Page range or page count')
+@click.option('--doi', help='DOI')
+@click.option('--url', help='URL')
+@click.option('--abstract', help='Abstract text')
+@click.option('--collection', help='Collection name to add item to')
+@click.option('--tags', help='Comma-separated tags')
+@click.option('--json-input', is_flag=True, help='Read item data from stdin as JSON')
+@click.option('--force', is_flag=True, help='Force creation even if duplicate exists')
+def add_item(item_type, title, authors, year, publication, publisher, volume,
+             issue, pages, doi, url, abstract, collection, tags, json_input, force):
+    """Add a new item to Zotero library.
+
+    By default, checks for duplicates by DOI (if provided) or exact title match.
+    Use --force to bypass duplicate checking and add the item anyway.
+
+    Examples:
+        zotero-add-item --type journalArticle \\
+          --title "Climate Adaptation Strategies" \\
+          --authors "Smith, John; Doe, Jane" \\
+          --year 2024 \\
+          --publication "Nature Climate Change" \\
+          --doi "10.1234/example" \\
+          --collection "Climate Research" \\
+          --tags "climate,adaptation,policy"
+
+        # Force adding even if duplicate exists
+        zotero-add-item --type book --title "Existing Book" --force
+
+        echo '{"itemType":"journalArticle","title":"..."}' | zotero-add-item --json-input
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Handle JSON input
+        if json_input:
+            item_data = json.load(sys.stdin)
+        else:
+            # Parse authors and tags
+            author_list = parse_author_list(authors) if authors else []
+            tag_list = parse_tags(tags) if tags else []
+
+            # Create item based on type
+            if item_type == 'journalArticle':
+                item_data = journal_article_template(
+                    title=title,
+                    authors=author_list,
+                    year=year or '',
+                    publication=publication or '',
+                    volume=volume or '',
+                    issue=issue or '',
+                    pages=pages or '',
+                    doi=doi or '',
+                    url=url or '',
+                    abstract=abstract or '',
+                    tags=tag_list
+                )
+            elif item_type == 'book':
+                item_data = book_template(
+                    title=title,
+                    authors=author_list,
+                    year=year or '',
+                    publisher=publisher or '',
+                    pages=pages or '',
+                    url=url or '',
+                    abstract=abstract or '',
+                    tags=tag_list
+                )
+            elif item_type == 'webpage':
+                item_data = webpage_template(
+                    title=title,
+                    url=url or '',
+                    authors=author_list,
+                    date=year or '',
+                    abstract=abstract or '',
+                    tags=tag_list
+                )
+            elif item_type == 'report':
+                item_data = report_template(
+                    title=title,
+                    authors=author_list,
+                    year=year or '',
+                    institution=publisher or '',
+                    url=url or '',
+                    abstract=abstract or '',
+                    tags=tag_list
+                )
+            elif item_type == 'conferencePaper':
+                item_data = conference_paper_template(
+                    title=title,
+                    authors=author_list,
+                    year=year or '',
+                    doi=doi or '',
+                    url=url or '',
+                    abstract=abstract or '',
+                    tags=tag_list
+                )
+
+        # Check for duplicates unless --force flag is used
+        if not force:
+            existing = None
+
+            # First check by DOI if available
+            if 'DOI' in item_data and item_data['DOI']:
+                existing = api.find_item_by_doi(item_data['DOI'])
+
+            # If no DOI match, check by title
+            if not existing and 'title' in item_data:
+                existing = api.find_item_by_title(item_data['title'], item_data.get('itemType'))
+
+            if existing:
+                existing_data = existing['data']
+                console.print(f"\n[yellow]⚠[/yellow] Duplicate item found")
+                console.print(f"[bold]Title:[/bold] {existing_data.get('title', '(no title)')}")
+
+                # Show authors if available
+                if 'creators' in existing_data and existing_data['creators']:
+                    authors_display = ', '.join([
+                        f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+                        for c in existing_data['creators'][:3]
+                    ])
+                    if len(existing_data['creators']) > 3:
+                        authors_display += ' et al.'
+                    console.print(f"[bold]Authors:[/bold] {authors_display}")
+
+                # Show year if available
+                if 'date' in existing_data:
+                    console.print(f"[bold]Year:[/bold] {existing_data['date']}")
+
+                console.print(f"[bold]Item key:[/bold] {existing_data['key']}")
+                console.print(f"\n[red]✗[/red] Item already exists. Use --force to add anyway.")
+                sys.exit(1)
+
+        # Get collection key if specified
+        collection_key = None
+        if collection:
+            collection_key = api.get_collection_key(collection)
+            if not collection_key:
+                console.print(f"[red]✗[/red] Collection '{collection}' not found")
+                console.print("[dim]Create it first with: zotero-create-collection[/dim]")
+                sys.exit(1)
+
+        # Add item
+        item_key = api.add_item(item_data, collection_key)
+
+        console.print(f"[green]✓[/green] Added item: {title}")
+        console.print(f"[dim]Key: {item_key}[/dim]")
+
+        if collection:
+            console.print(f"[dim]Collection: {collection}[/dim]")
+
+        if tags:
+            console.print(f"[dim]Tags: {tags}[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    add_item()

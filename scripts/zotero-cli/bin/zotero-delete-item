@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Delete item(s) from Zotero library."""
+
+import sys
+from pathlib import Path
+
+import click
+
+# Add library path
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from rich.console import Console
+
+console = Console()
+
+@click.command()
+@click.argument('item_keys', nargs=-1, required=True)
+@click.option('--force', is_flag=True, help='Skip confirmation prompt')
+def delete_item(item_keys: tuple, force: bool):
+    """Delete one or more items from library.
+
+    Items are moved to trash (recoverable in Zotero desktop).
+
+    Examples:
+        zotero-delete-item ABC123
+        zotero-delete-item ABC123 XYZ789 DEF456
+        zotero-delete-item ABC123 --force
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Process each item
+        for item_key in item_keys:
+            try:
+                # Get item details
+                item = api.get_item(item_key)
+                data = item['data']
+
+                # Show item details
+                console.print(f"\n[bold]About to delete item:[/bold]")
+                console.print(f"Key: {data['key']}")
+                console.print(f"Title: {data.get('title', '(no title)')}")
+
+                if 'creators' in data and data['creators']:
+                    authors = ', '.join([
+                        f"{c.get('firstName', '')} {c.get('lastName', '')}".strip()
+                        for c in data['creators'][:3]
+                    ])
+                    if len(data['creators']) > 3:
+                        authors += ' et al.'
+                    console.print(f"Authors: {authors}")
+
+                # Tags
+                if 'tags' in data and data['tags']:
+                    tag_names = [t['tag'] for t in data['tags']]
+                    console.print(f"Tags: {', '.join(tag_names)}")
+
+                # Confirm deletion
+                if not force:
+                    confirm = console.input("\n[bold red]Delete this item? [y/N]:[/bold red] ")
+                    if confirm.lower() != 'y':
+                        console.print("[yellow]Skipped[/yellow]")
+                        continue
+
+                # Delete item
+                api.delete_item(item_key)
+                console.print(f"[green]✓[/green] Deleted: {item_key}")
+
+            except Exception as e:
+                console.print(f"[red]✗[/red] Error deleting {item_key}: {str(e)}")
+                continue
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    delete_item()

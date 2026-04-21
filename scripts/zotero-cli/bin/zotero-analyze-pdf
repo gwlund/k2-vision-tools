@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Analyze PDF with LLM and create highlights."""
+
+import sys
+from pathlib import Path
+import click
+
+sys.path.insert(0, str(Path(__file__).parent.parent / 'lib'))
+
+from zotero_api import ZoteroAPI
+from llm_analysis import (
+    get_llm_provider,
+    build_analysis_prompt,
+    extract_highlights_from_response
+)
+from pdf_text_extraction import prepare_document_for_llm
+from rich.console import Console
+from rich.progress import Progress
+
+console = Console()
+
+
+def _get_pdf_path_from_item(api: ZoteroAPI, item_key: str) -> Path:
+    """Get local path to PDF attachment for item.
+
+    Args:
+        api: ZoteroAPI instance
+        item_key: Item key
+
+    Returns:
+        Path: Local path to PDF, or None if not found
+    """
+    # Get item
+    item = api.get_item(item_key)
+    if not item:
+        return None
+
+    # Check if item itself is an attachment
+    if item['data'].get('itemType') == 'attachment':
+        # This is the attachment - get its path
+        # For now, return None - would need file download implementation
+        return None
+
+    # Get children to find PDF attachment
+    children = api.zot.children(item_key)
+
+    for child in children:
+        if child['data'].get('itemType') == 'attachment':
+            content_type = child['data'].get('contentType', '')
+            if 'pdf' in content_type.lower():
+                # Found PDF attachment
+                # For now, return None - would need file download implementation
+                # In real usage, would download or find local file
+                return None
+
+    return None
+
+
+def _show_analysis_summary(highlights: list[dict]):
+    """Display summary of LLM analysis results.
+
+    Args:
+        highlights: List of highlight dictionaries
+    """
+    console.print(f"\n[bold]Analysis Results:[/bold]")
+    console.print(f"  Found {len(highlights)} highlights\n")
+
+    for i, h in enumerate(highlights[:5], 1):
+        text_preview = h['text'][:80] + '...' if len(h['text']) > 80 else h['text']
+        console.print(f"  [{i}] Page {h['page']}: {text_preview}")
+        console.print(f"      [dim]{h['reason']}[/dim]\n")
+
+    if len(highlights) > 5:
+        console.print(f"  ... and {len(highlights) - 5} more")
+
+
+def _create_highlights_in_zotero(api: ZoteroAPI, item_key: str,
+                                highlights: list[dict], tag: str,
+                                dry_run: bool = False) -> int:
+    """Create highlights in Zotero PDF.
+
+    Args:
+        api: ZoteroAPI instance
+        item_key: Item key
+        highlights: List of highlights to create
+        tag: Tag to apply to highlights
+        dry_run: If True, don't actually create highlights
+
+    Returns:
+        int: Number of highlights created
+    """
+    if dry_run:
+        console.print("[yellow]DRY RUN - No highlights created[/yellow]")
+        return 0
+
+    created = 0
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Creating highlights...",
+                                total=len(highlights))
+
+        for h in highlights:
+            highlight_data = {
+                'text': h['text'],
+                'page': h['page'],
+                'color': 'yellow',
+                'comment': h['reason'],
+                'tags': [tag]
+            }
+            try:
+                api.create_highlight(item_key, highlight_data)
+                created += 1
+            except Exception as e:
+                console.print(f"[yellow]⚠[/yellow] Failed to create highlight: {str(e)}")
+
+            progress.update(task, advance=1)
+
+    return created
+
+
+@click.command()
+@click.argument('item_key')
+@click.option('--topics', help='Comma-separated topics for quick analysis')
+@click.option('--mode', type=click.Choice(['quick', 'deep']), default='quick',
+              help='Analysis depth')
+@click.option('--context', help='Research context for deep mode')
+@click.option('--capture', default='text',
+              help='Content to capture: text, tables, images (comma-separated)')
+@click.option('--llm', type=click.Choice(['claude', 'openai', 'ollama']),
+              help='LLM provider (default from config)')
+@click.option('--dry-run', is_flag=True,
+              help='Show analysis without creating highlights')
+@click.option('--tag', default='needs-review',
+              help='Tag for created highlights')
+@click.option('--pdf-path', type=click.Path(exists=True),
+              help='Path to PDF file (if not in Zotero)')
+def analyze_pdf(item_key, topics, mode, context, capture, llm, dry_run, tag, pdf_path):
+    """Analyze PDF with LLM and create highlights.
+
+    NOTE: Creates metadata-only annotations that export to Obsidian but do NOT
+    appear as visual highlights in Zotero's PDF reader. Annotations contain all
+    text, comments, and page numbers. See ANNOTATION_LIMITATIONS.md for details.
+
+    Examples:
+        zotero-analyze-pdf ABC123 --topics "tourism,manufacturing"
+        zotero-analyze-pdf ABC123 --mode deep --context "Find comparable data"
+        zotero-analyze-pdf ABC123 --topics "economic" --capture text,tables
+        zotero-analyze-pdf ABC123 --pdf-path /path/to/file.pdf --topics "tourism"
+    """
+
+    try:
+        api = ZoteroAPI()
+
+        # Validate item exists
+        item = api.get_item(item_key)
+        if not item:
+            console.print(f"[red]✗[/red] Item {item_key} not found")
+            sys.exit(1)
+
+        console.print(f"[bold]Analyzing:[/bold] {item['data'].get('title', item_key)}\n")
+
+        # Get PDF path
+        if pdf_path:
+            pdf_file = Path(pdf_path)
+        else:
+            pdf_file = _get_pdf_path_from_item(api, item_key)
+
+        if not pdf_file or not pdf_file.exists():
+            console.print("[red]✗[/red] No PDF file available")
+            console.print("[dim]Tip: Use --pdf-path to specify PDF location[/dim]")
+            sys.exit(1)
+
+        # Prepare document content
+        console.print("[dim]Extracting PDF content...[/dim]")
+        capture_types = capture.split(',')
+        document = prepare_document_for_llm(
+            pdf_file,
+            include_tables='tables' in capture_types,
+            include_images='images' in capture_types
+        )
+
+        # Build analysis prompt
+        topic_list = topics.split(',') if topics else []
+        prompt = build_analysis_prompt(topic_list, context, mode)
+
+        # Get LLM provider
+        try:
+            provider = get_llm_provider(llm)
+        except Exception as e:
+            console.print(f"[red]✗[/red] LLM provider error: {str(e)}")
+            console.print("[dim]Tip: Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or configure Ollama[/dim]")
+            sys.exit(1)
+
+        # Analyze with LLM
+        provider_name = llm or 'default'
+        console.print(f"[dim]Analyzing with {provider_name} LLM...[/dim]")
+
+        try:
+            response = provider.analyze_document(document['text'], prompt)
+        except Exception as e:
+            console.print(f"[red]✗[/red] LLM analysis failed: {str(e)}")
+            sys.exit(1)
+
+        # Extract highlights
+        highlights = extract_highlights_from_response(response)
+
+        # Show summary
+        _show_analysis_summary(highlights)
+
+        # Create highlights in Zotero
+        if highlights:
+            console.print()
+            created = _create_highlights_in_zotero(
+                api, item_key, highlights, tag, dry_run
+            )
+
+            if dry_run:
+                console.print(f"\n[yellow]DRY RUN: Would create {len(highlights)} highlights[/yellow]")
+            else:
+                console.print(f"\n[green]✓[/green] Created {created} highlights")
+                console.print(f"[dim]Tagged with: {tag}[/dim]")
+        else:
+            console.print("\n[yellow]No highlights identified[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]✗[/red] Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    analyze_pdf()
